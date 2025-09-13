@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Recognizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            overflow: hidden;
+        }
+        .container {
+            max-width: 1200px;
+        }
+        #webcam-container {
+            position: relative;
+            background-color: #000;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            width: 100%;
+        }
+        #webcam-video, #webcam-canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        #webcam-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+        }
+        .info-card {
+            background-color: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 1rem;
+            padding: 1rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .loading {
+            color: #6b7280;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="container mx-auto flex flex-col items-center">
+        <!-- Header -->
+        <div class="text-center mb-6">
+            <h1 class="text-4xl font-bold text-gray-800">Gesture Recognizer</h1>
+            <p class="mt-2 text-gray-600">Detect your hands in real-time using machine learning!</p>
+        </div>
+
+        <!-- Webcam and Canvas Container -->
+        <div id="webcam-container" class="relative w-full aspect-video mb-6">
+            <video id="webcam-video" autoplay playsinline class="w-full h-full"></video>
+            <canvas id="webcam-canvas" class="w-full h-full"></canvas>
+            <div id="loading-indicator" class="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-70 text-white text-xl font-bold">
+                Loading AI model...
+            </div>
+        </div>
+
+        <!-- Info and Results -->
+        <div class="info-card flex flex-col items-center">
+            <h2 class="text-xl font-semibold text-gray-800 mb-2">Detection Results</h2>
+            <p id="status-message" class="text-gray-600 mb-2 loading">Awaiting webcam permission...</p>
+            <p id="detection-message" class="text-gray-600 text-sm italic mb-2">Once the model is loaded, hold your hand in front of the camera.</p>
+            <p id="hands-detected" class="text-lg text-gray-800 font-medium">Hands Detected: 0</p>
+        </div>
+    </div>
+
+    <!-- TensorFlow.js Library -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter/dist/tf-converter.min.js"></script>
+
+    <script>
+        const video = document.getElementById('webcam-video');
+        const canvas = document.getElementById('webcam-canvas');
+        const ctx = canvas.getContext('2d');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const statusMessage = document.getElementById('status-message');
+        const handsDetectedEl = document.getElementById('hands-detected');
+        const detectionMessageEl = document.getElementById('detection-message');
+
+        let model, videoWidth, videoHeight;
+        let isWebcamReady = false;
+
+        // Function to draw keypoints and skeleton on the canvas
+        const drawHands = (hands) => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
+
+            // Update the hands detected count
+            handsDetectedEl.textContent = `Hands Detected: ${hands.length}`;
+            if (hands.length > 0) {
+                detectionMessageEl.textContent = 'Awesome! We\'ve found your hand.';
+            } else {
+                detectionMessageEl.textContent = 'No hands detected. Try moving your hand closer and ensuring good lighting.';
+            }
+
+            hands.forEach(hand => {
+                // Draw keypoints
+                for (const keypoint of hand.keypoints) {
+                    ctx.beginPath();
+                    ctx.arc(keypoint.x, keypoint.y, 5, 0, 2 * Math.PI);
+                    ctx.fillStyle = '#FF0000';
+                    ctx.fill();
+                }
+
+                // Draw skeleton (lines connecting keypoints)
+                const fingers = hand.keypoints.slice(0, 21);
+                const pairs = [
+                    [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+                    [0, 5], [5, 6], [6, 7], [7, 8], // Index
+                    [0, 9], [9, 10], [10, 11], [11, 12], // Middle
+                    [0, 13], [13, 14], [14, 15], [15, 16], // Ring
+                    [0, 17], [17, 18], [18, 19], [19, 20]  // Pinky
+                ];
+
+                ctx.strokeStyle = '#00FFFF';
+                ctx.lineWidth = 2;
+                
+                for (const [startIdx, endIdx] of pairs) {
+                    const startKeypoint = fingers[startIdx];
+                    const endKeypoint = fingers[endIdx];
+
+                    ctx.beginPath();
+                    ctx.moveTo(startKeypoint.x, startKeypoint.y);
+                    ctx.lineTo(endKeypoint.x, endKeypoint.y);
+                    ctx.stroke();
+                }
+            });
+        };
+
+        // Main prediction loop
+        const predictHands = async () => {
+            if (!isWebcamReady || !model) {
+                requestAnimationFrame(predictHands);
+                return;
+            }
+
+            const hands = await model.estimateHands(video);
+            drawHands(hands);
+
+            requestAnimationFrame(predictHands);
+        };
+
+        // Initialize webcam and model
+        const setup = async () => {
+            try {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    statusMessage.textContent = 'Error: Your browser does not support the WebCam API.';
+                    statusMessage.classList.remove('loading');
+                    loadingIndicator.classList.add('hidden');
+                    return;
+                }
+
+                // Check for WebGL backend and load it
+                await tf.setBackend('webgl');
+                await tf.ready();
+
+                // Get webcam video stream
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.addEventListener('loadeddata', async () => {
+                    videoWidth = video.videoWidth;
+                    videoHeight = video.videoHeight;
+                    canvas.width = videoWidth;
+                    canvas.height = videoHeight;
+                    isWebcamReady = true;
+                    statusMessage.textContent = 'Webcam is ready. Loading model...';
+
+                    // Load the hand pose detection model with a timeout
+                    const loadModelPromise = handPoseDetection.createDetector(handPoseDetection.SupportedModels.MediaPipeHands, {
+                        runtime: 'tfjs',
+                    });
+                    
+                    const timeoutPromise = new Promise((resolve, reject) => {
+                        setTimeout(() => reject(new Error('Model loading timed out.')), 10000); // 10 seconds timeout
+                    });
+
+                    model = await Promise.race([loadModelPromise, timeoutPromise]);
+                    
+                    statusMessage.textContent = 'Model loaded successfully. Ready to detect hands.';
+                    statusMessage.classList.remove('loading');
+                    loadingIndicator.classList.add('hidden');
+                    
+                    predictHands();
+                });
+            } catch (error) {
+                console.error('Error accessing webcam or loading model:', error);
+                if (error.name === "NotAllowedError" || error.message.includes("permission")) {
+                    statusMessage.textContent = 'Error: Webcam access was denied. Please refresh and grant permission.';
+                } else if (error.message.includes("timed out")) {
+                    statusMessage.textContent = 'Error: Model loading timed out. Please check your internet connection and try again.';
+                } else {
+                    statusMessage.textContent = 'Error: Failed to access webcam or load the model. Please check your permissions and refresh the page.';
+                }
+                statusMessage.classList.remove('loading');
+                loadingIndicator.classList.add('hidden');
+            }
+        };
+
+        window.onload = setup;
+    </script>
+</body>
+</html>
